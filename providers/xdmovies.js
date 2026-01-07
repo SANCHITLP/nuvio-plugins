@@ -628,8 +628,10 @@ function extractCodec(text) {
 // ================= MAIN =================
 
 function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) {
+    console.log('[XDmovies] getStreams called:', { tmdbId, mediaType, season, episode });
     return getTMDBDetails(tmdbId, mediaType)
         .then(mediaInfo => {
+            console.log('[XDmovies] TMDB returned:', { title: mediaInfo?.title, year: mediaInfo?.year });
             if (!mediaInfo?.title) return [];
 
             // ---------- SEARCH ----------
@@ -639,11 +641,13 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
             )
                 .then(r => r.ok ? r.json() : [])
                 .then(searchData => {
+                    console.log('[XDmovies] Search results count:', Array.isArray(searchData) ? searchData.length : 0);
                     if (!Array.isArray(searchData)) return [];
 
                     const matched = searchData.find(
                         x => Number(x.tmdb_id) === Number(tmdbId)
                     );
+                    console.log('[XDmovies] Matched result:', matched ? matched.path : 'NO MATCH');
                     if (!matched?.path) return [];
 
                     // ---------- DETAILS PAGE ----------
@@ -709,9 +713,13 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
                                 });
                             });
 
-                            return Promise.all(jobs).then(() => collectedUrls);
+                            return Promise.all(jobs).then(() => {
+                                console.log('[XDmovies] TV URLs collected:', collectedUrls.length);
+                                return collectedUrls;
+                            });
                         })
                         .then(collectedUrls => {
+                            console.log('[XDmovies] Total URLs to extract:', collectedUrls.length, collectedUrls.slice(0, 3));
                             if (!collectedUrls.length) return [];
 
                             // ---------- EXTRACTION ----------
@@ -722,6 +730,7 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
                                 )
                             ).then(results => {
                                 const flat = results.flat();
+                                console.log('[XDmovies] Extraction results:', flat.length, 'links from', results.length, 'extractors');
 
                                 // Deduplicate FINAL streams only
                                 const seen = new Set();
