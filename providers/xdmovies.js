@@ -665,13 +665,17 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
                                     redirect: 'manual'
                                 })
                                     .then(res => {
+                                        const loc = res.headers.get('location');
+                                        console.log('[XDmovies] resolveRedirect:', url.substring(0, 50), '-> Status:', res.status, 'Location:', loc || 'none');
                                         if (res.status >= 300 && res.status < 400) {
-                                            const loc = res.headers.get('location');
                                             return loc ? new URL(loc, url).toString() : null;
                                         }
                                         return url;
                                     })
-                                    .catch(() => null);
+                                    .catch((e) => {
+                                        console.log('[XDmovies] resolveRedirect error:', e.message);
+                                        return null;
+                                    });
 
                             // ===== MOVIE =====
                             if (!season) {
