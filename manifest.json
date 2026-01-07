@@ -504,6 +504,27 @@
       "contentLanguage": [
         "en"
       ]
+    },
+    {
+      "id": "xdmovies",
+      "name": "XDmovies",
+      "description": "XDmovies direct download links with HubCloud, Pixeldrain and multiple server extraction",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/xdmovies.js",
+      "enabled": true,
+      "formats": [
+        "mkv",
+        "mp4"
+      ],
+      "logo": "https://xdmovies.site/favicon.ico",
+      "contentLanguage": [
+        "en"
+      ]
     }
   ]
 }
