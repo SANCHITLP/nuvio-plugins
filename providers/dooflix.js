@@ -1,6 +1,6 @@
 /**
  * Dooflix Plugin for Nuvio
- * Handles Movies and TV Series via the Dooflix API
+ * Ported from TypeScript components
  */
 
 const DOOFLIX_HEADERS = {
@@ -12,170 +12,143 @@ const DOOFLIX_HEADERS = {
 };
 
 /**
- * Helper to extract and parse JSON from the messy Dooflix response
+ * Handles Dooflix API's messy response which is often a JSON string 
+ * wrapped in non-JSON characters.
  */
-function parseDooflixData(resData) {
-    if (!resData || typeof resData !== "string") return resData;
+function safeJsonParse(data) {
+    if (typeof data !== 'string') return data;
     try {
-        const jsonStart = resData.indexOf("{") !== -1 ? resData.indexOf("{") : resData.indexOf("[");
-        const jsonEnd = Math.max(resData.lastIndexOf("}"), resData.lastIndexOf("]")) + 1;
-        if (jsonStart === -1 || jsonEnd === 0) return resData;
-        
-        const jsonSubstring = resData.substring(jsonStart, jsonEnd);
-        return JSON.parse(jsonSubstring);
+        const jsonStart = data.indexOf("{") !== -1 ? data.indexOf("{") : data.indexOf("[");
+        const jsonEnd = Math.max(data.lastIndexOf("}"), data.lastIndexOf("]")) + 1;
+        if (jsonStart === -1 || jsonEnd === 0) return JSON.parse(data);
+        const jsonStr = data.substring(jsonStart, jsonEnd);
+        return JSON.parse(jsonStr);
     } catch (e) {
-        console.error("Dooflix Parse Error:", e);
-        return resData;
+        return null;
     }
 }
 
-/**
- * Catalog Configuration
- */
 const catalog = [
-    { title: "Series", filter: "/rest-api//v130/tvseries" },
-    { title: "Movies", filter: "/rest-api//v130/movies" },
+    {
+        title: "Series",
+        filter: "/rest-api//v130/tvseries",
+    },
+    {
+        title: "Movies",
+        filter: "/rest-api//v130/movies",
+    }
 ];
 
-/**
- * Fetches the list of posts (Movies/Series)
- */
 async function getPosts({ filter, page, signal, providerContext }) {
+    const { axios, getBaseUrl } = providerContext;
+    const baseUrl = await getBaseUrl("dooflix");
+    const url = `${baseUrl}${filter}?page=${page}`;
+
     try {
-        const { axios, getBaseUrl } = providerContext;
-        const baseUrl = await getBaseUrl("dooflix");
-        const url = `${baseUrl}${filter}?page=${page}`;
-
         const res = await axios.get(url, { headers: DOOFLIX_HEADERS, signal });
-        const data = parseDooflixData(res.data);
-
+        const data = safeJsonParse(res.data);
         const posts = [];
 
-        // Handle Movies
-        data?.movie?.forEach((item) => {
-            const id = item?.videos_id;
-            if (!id) return;
-            posts.push({
-                title: item?.title || "",
-                link: `${baseUrl}/rest-api//v130/single_details?type=movie&id=${id}`,
-                image: (item?.thumbnail_url || "").replace("http:", "https:"),
+        // Movies array
+        if (data?.movie) {
+            data.movie.forEach(item => {
+                const id = item?.videos_id;
+                if (!id) return;
+                posts.push({
+                    title: item.title || "",
+                    link: `${baseUrl}/rest-api//v130/single_details?type=movie&id=${id}`,
+                    image: (item.thumbnail_url || "").replace("http:", "https:"),
+                });
             });
-        });
+        }
 
-        // Handle TV Series
-        data?.tvseries?.forEach((item) => {
-            const id = item?.videos_id;
-            if (!id) return;
-            posts.push({
-                title: item?.title || "",
-                link: `${baseUrl}/rest-api//v130/single_details?type=tvseries&id=${id}`,
-                image: (item?.thumbnail_url || "").replace("http:", "https:"),
+        // TV Series array
+        if (data?.tvseries) {
+            data.tvseries.forEach(item => {
+                const id = item?.videos_id;
+                if (!id) return;
+                posts.push({
+                    title: item.title || "",
+                    link: `${baseUrl}/rest-api//v130/single_details?type=tvseries&id=${id}`,
+                    image: (item.thumbnail_url || "").replace("http:", "https:"),
+                });
             });
-        });
+        }
 
         return posts;
-    } catch (error) {
-        console.error("Dooflix getPosts Error:", error.message);
+    } catch (err) {
+        console.error("Dooflix getPosts error:", err);
         return [];
     }
 }
 
-/**
- * Fetches Metadata for a specific Movie or Series
- */
 async function getMeta({ link, providerContext }) {
-    try {
-        const { axios } = providerContext;
-        const res = await axios.get(link, { headers: DOOFLIX_HEADERS });
-        const data = parseDooflixData(res.data);
+    const { axios } = providerContext;
 
-        const title = data?.title || "";
-        const isSeries = Number(data?.is_tvseries) === 1;
-        const links = [];
+    try {
+        const res = await axios.get(link, { headers: DOOFLIX_HEADERS });
+        const data = safeJsonParse(res.data);
+        if (!data) return null;
+
+        const isSeries = Number(data.is_tvseries) === 1;
+        const metaLinks = [];
 
         if (isSeries) {
-            data?.season?.forEach((season) => {
-                const seasonTitle = season?.seasons_name || "Season";
-                const episodes = season?.episodes?.map((ep) => ({
-                    title: ep?.episodes_name || `Episode ${ep?.orders}`,
-                    link: ep?.file_url,
-                })) || [];
-
-                links.push({
-                    title: seasonTitle,
-                    directLinks: episodes,
+            data.season?.forEach(s => {
+                metaLinks.push({
+                    title: s.seasons_name || "Season",
+                    directLinks: s.episodes?.map(e => ({
+                        title: e.episodes_name || `Episode ${e.orders}`,
+                        link: e.file_url
+                    })) || []
                 });
             });
         } else {
-            data?.videos?.forEach((video) => {
-                links.push({
-                    title: `${title} - ${video?.label || 'Play'}`,
-                    directLinks: [{
-                        title: "Play",
-                        link: video?.file_url,
-                    }],
+            data.videos?.forEach(v => {
+                metaLinks.push({
+                    title: `${data.title} ${v.label || ""}`,
+                    directLinks: [{ title: "Play", link: v.file_url }]
                 });
             });
         }
 
         return {
-            title: title,
-            image: (data?.poster_url || "").replace("http:", "https:"),
-            synopsis: data?.description || "",
-            rating: data?.imdb_rating || "N/A",
-            cast: data?.cast || [],
-            tags: data?.genre?.map(g => g?.name) || [],
-            links: links,
+            title: data.title || "",
+            image: (data.poster_url || "").replace("http:", "https:"),
+            synopsis: data.description || "",
+            rating: data.imdb_rating || "N/A",
+            cast: data.cast || [],
+            tags: data.genre?.map(g => g.name) || [],
+            links: metaLinks
         };
-    } catch (error) {
-        console.error("Dooflix getMeta Error:", error.message);
+    } catch (err) {
+        console.error("Dooflix getMeta error:", err);
         return null;
     }
 }
 
-/**
- * Fetches Streams (Source URLs)
- */
 async function getStream({ link, providerContext }) {
-    try {
-        // Based on stream.ts logic
-        const streams = [];
-        const headers = {
-            "Connection": "Keep-Alive",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.37",
-            "Referer": "https://molop.art/",
-            "Cookie": "cf_clearance=M2_2Hy4lKRy_ruRX3dzOgm3iho1FHe2DUC1lq28BUtI-1737377622-1.2.1.1-6R8RaH94._H2BuNuotsjTZ3fAF6cLwPII0guemu9A5Xa46lpCJPuELycojdREwoonYS2kRTYcZ9_1c4h4epi2LtDvMM9jIoOZKE9pIdWa30peM1hRMpvffTjGUCraHsJNCJez8S_QZ6XkkdP7GeQ5iwiYaI6Grp6qSJWoq0Hj8lS7EITZ1LzyrALI6iLlYjgLmgLGa1VuhORWJBN8ZxrJIZ_ba_pqbrR9fjny"
-        };
+    // Basic stream wrapper for direct links returned by Dooflix
+    if (!link) return [];
 
-        if (link) {
-            streams.push({
-                name: "Dooflix Primary",
-                url: link,
-                quality: "HD",
-                headers: headers
-            });
-        }
+    const streamHeaders = {
+        "Connection": "Keep-Alive",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.37",
+        "Referer": "https://molop.art/",
+        "Cookie": "cf_clearance=M2_2Hy4lKRy_ruRX3dzOgm3iho1FHe2DUC1lq28BUtI-1737377622-1.2.1.1-6R8RaH94._H2BuNuotsjTZ3fAF6cLwPII0guemu9A5Xa46lpCJPuELycojdREwoonYS2kRTYcZ9_1c4h4epi2LtDvMM9jIoOZKE9pIdWa30peM1hRMpvffTjGUCraHsJNCJez8S_QZ6XkkdP7GeQ5iwiYaI6Grp6qSJWoq0Hj8lS7EITZ1LzyrALI6iLlYjgLmgLGa1VuhORWJBN8ZxrJIZ_ba_pqbrR9fjny"
+    };
 
-        return streams;
-    } catch (error) {
-        console.error("Dooflix getStream Error:", error.message);
-        return [];
-    }
+    return [{
+        name: "Dooflix Server",
+        url: link,
+        quality: "HD",
+        headers: streamHeaders
+    }];
 }
 
-// Export for Nuvio environment
+// Export module
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = {
-        catalog,
-        getPosts,
-        getMeta,
-        getStream
-    };
+    module.exports = { catalog, getPosts, getMeta, getStream };
 } else {
-    global.dooflixPlugin = {
-        catalog,
-        getPosts,
-        getMeta,
-        getStream
-    };
+    global.dooflix = { catalog, getPosts, getMeta, getStream };
 }
