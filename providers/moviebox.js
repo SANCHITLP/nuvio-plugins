@@ -1,6 +1,6 @@
 /**
  * MovieBox Scraper for Nuvio (Hermes/JS Environment)
- * Features: Cloudflare DNS-over-HTTPS (DoH), Realistic Android Headers, HMAC-MD5 Signing
+ * Features: Cloudflare DNS-over-HTTPS (DoH), Android User-Agent, HMAC-MD5 Signing
  */
 
 const CryptoJS = require('crypto-js');
@@ -10,28 +10,10 @@ const API_BASE_HOST = "api.inmoviebox.com";
 const TMDB_API_KEY = 'd131017ccc6e5462a81c9304d21476de';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 
-// Realistic Android 14 (Pixel 8) Headers
-const DEVICE_ID = [...Array(16)].map(() => Math.floor(Math.random() * 16).toString(16)).join('');
-const ANDROID_HEADERS = {
-    'User-Agent': 'com.community.mbox.in/50020042 (Linux; U; Android 14; en_US; Pixel 8 Build/UD1A.230805.019; Cronet/121.0.6167.71)',
-    'x-client-info': JSON.stringify({
-        "package_name": "com.community.mbox.in",
-        "version_name": "3.0.03.0529.03",
-        "version_code": 50020042,
-        "os": "android",
-        "os_version": "14",
-        "device_id": DEVICE_ID,
-        "brand": "google",
-        "model": "Pixel 8",
-        "net": "NETWORK_WIFI",
-        "region": "US",
-        "timezone": "UTC"
-    }),
-    'x-client-status': '0'
-};
+// Android 14 User-Agent
+const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UD1A.230805.019) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.71 Mobile Safari/537.36';
 
 // --- DNS OVER HTTPS (DoH) RESOLVER ---
-// Bypasses ISP/Local DNS blocks by resolving IP addresses via Cloudflare
 async function resolveDns(hostname) {
     try {
         const dohUrl = `https://cloudflare-dns.com/dns-query?name=${hostname}&type=A`;
@@ -40,13 +22,12 @@ async function resolveDns(hostname) {
         });
         const json = await response.json();
         if (json.Answer && json.Answer.length > 0) {
-            // Return the first available IP
             return json.Answer[0].data;
         }
     } catch (e) {
         console.error(`DNS Resolution failed for ${hostname}:`, e);
     }
-    return null; // Fallback to system DNS if DoH fails
+    return null;
 }
 
 // --- CRYPTO HELPERS ---
@@ -96,12 +77,12 @@ async function secureRequest(method, path, body = null) {
     const requestUrl = ip ? `https://${ip}${path}` : url;
 
     const headers = {
-        ...ANDROID_HEADERS,
+        'User-Agent': ANDROID_UA,
         'Accept': 'application/json',
         'Content-Type': 'application/json',
         'x-client-token': generateXClientToken(timestamp),
         'x-tr-signature': generateXTrSignature(method, 'application/json', 'application/json', path, body, timestamp),
-        'Host': API_BASE_HOST // Essential when using IP-based requestUrl
+        'Host': API_BASE_HOST
     };
 
     try {
@@ -130,7 +111,7 @@ async function getStreams(tmdbId, mediaType, season = 1, episode = 1) {
 
     if (!searchRes?.data?.results) return [];
 
-    // 3. Find Best Match (Simple Filter)
+    // 3. Find Best Match
     const typeId = mediaType === 'movie' ? 1 : 2;
     const subjects = searchRes.data.results.flatMap(r => r.subjects || []);
     const match = subjects.find(s => s.subjectType === typeId);
@@ -150,7 +131,7 @@ async function getStreams(tmdbId, mediaType, season = 1, episode = 1) {
         name: `MovieBox ${stream.quality || 'Auto'}`,
         url: stream.url,
         headers: {
-            ...ANDROID_HEADERS,
+            'User-Agent': ANDROID_UA,
             "Referer": `https://${API_BASE_HOST}`,
             ...(stream.signCookie ? { "Cookie": stream.signCookie } : {})
         }
