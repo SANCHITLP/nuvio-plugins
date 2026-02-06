@@ -19,7 +19,6 @@ const API_BASE = "https://api.inmoviebox.com";
 const KEY_B64_DEFAULT = "NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw==";
 const KEY_B64_ALT = "WHFuMm5uTzQxL0w5Mm8xaXVYaFNMSFRiWHZZNFo1Wlo2Mm04bVNMQQ==";
 
-// 1. Decode Base64 to Words. 2. Convert to UTF8 String. 3. Decode Base64 again to Words (Key)
 const SECRET_KEY_DEFAULT = CryptoJS.enc.Base64.parse(
     CryptoJS.enc.Base64.parse(KEY_B64_DEFAULT).toString(CryptoJS.enc.Utf8)
 );
@@ -31,9 +30,44 @@ const SECRET_KEY_ALT = CryptoJS.enc.Base64.parse(
 const TMDB_API_KEY = 'd131017ccc6e5462a81c9304d21476de';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 
+// --- NEW: DNS-over-HTTPS (DoH) Implementation for ISP Bypass ---
+async function resolveDoh(hostname) {
+    try {
+        const dohUrl = `https://cloudflare-dns.com/query?name=${hostname}&type=A`;
+        const response = await fetch(dohUrl, { headers: { 'accept': 'application/dns-json' } });
+        const json = await response.json();
+        if (json.Answer && json.Answer.length > 0) {
+            return json.Answer[0].data;
+        }
+    } catch (e) {
+        console.error("DoH Resolution failed:", e);
+    }
+    return null;
+}
+
+async function requestWithDoh(method, url, body = null, customHeaders = {}) {
+    const urlObj = new URL(url);
+    const originalHost = urlObj.hostname;
+    
+    // Attempt to resolve IP via Cloudflare DoH
+    const ip = await resolveDoh(originalHost);
+    
+    let finalUrl = url;
+    const finalHeaders = { ...customHeaders };
+
+    if (ip) {
+        // Swap hostname with IP to bypass DNS filtering
+        urlObj.hostname = ip;
+        finalUrl = urlObj.toString();
+        // Crucial for HTTPS: Host header must be the original domain
+        finalHeaders['Host'] = originalHost;
+    }
+
+    return request(method, finalUrl, body, finalHeaders);
+}
+
 // Helpers
 function md5(input) {
-    // input can be string or words
     return CryptoJS.MD5(input).toString(CryptoJS.enc.Hex);
 }
 
@@ -53,9 +87,6 @@ function buildCanonicalString(method, accept, contentType, url, body, timestamp)
     let query = "";
 
     try {
-        // Handle both full URLs and paths (though we mostly use full URLs here)
-        // Note: For React Native/Hermes compatibility, simple string splitting for path/query is safer if URL is not fully supported
-        // But contemporary RN supports URL.
         const urlObj = new URL(url);
         path = urlObj.pathname;
         const params = Array.from(urlObj.searchParams.keys()).sort();
@@ -66,27 +97,17 @@ function buildCanonicalString(method, accept, contentType, url, body, timestamp)
             }).join('&');
         }
     } catch (e) {
-        // Fallback for relative paths or invalid URL construction
         console.error("Invalid URL for canonical:", url);
     }
 
     const canonicalUrl = query ? `${path}?${query}` : path;
-
     let bodyHash = "";
     let bodyLength = "";
 
     if (body) {
-        // Need to replicate the byte trimming logic: if > 102400 bytes, trim.
-        // In JS, strings are UTF-16. Converting to UTF-8 words using CryptoJS.
         const bodyWords = CryptoJS.enc.Utf8.parse(body);
         const totalBytes = bodyWords.sigBytes;
-
-        if (totalBytes > 102400) {
-            // Simplified: if string length is small enough, use it.
-            bodyHash = md5(bodyWords);
-        } else {
-            bodyHash = md5(bodyWords);
-        }
+        bodyHash = md5(bodyWords);
         bodyLength = totalBytes.toString();
     }
 
@@ -96,7 +117,7 @@ function buildCanonicalString(method, accept, contentType, url, body, timestamp)
         `${bodyLength}\n` +
         `${timestamp}\n` +
         `${bodyHash}\n` +
-        canonicalUrl;
+        `${canonicalUrl}`;
 }
 
 function generateXTrSignature(method, accept, contentType, url, body, useAltKey = false, customTimestamp = null) {
@@ -112,13 +133,9 @@ function request(method, url, body = null, customHeaders = {}) {
     const xClientToken = generateXClientToken(timestamp);
 
     let headerContentType = customHeaders['Content-Type'] || 'application/json';
-
-    // Key fix: use plain content-type for signature even if strictly formatted in body
     let sigContentType = headerContentType;
-
     const accept = customHeaders['Accept'] || 'application/json';
 
-    // Pass timestamp for consistency
     const xTrSignature = generateXTrSignature(method, accept, sigContentType, url, body, false, timestamp);
 
     const headers = {
@@ -144,9 +161,7 @@ function request(method, url, body = null, customHeaders = {}) {
     return fetch(url, options)
         .then(res => {
             return res.text().then(text => {
-                if (!res.ok) {
-                    return null;
-                }
+                if (!res.ok) return null;
                 try {
                     return JSON.parse(text);
                 } catch (e) {
@@ -154,9 +169,7 @@ function request(method, url, body = null, customHeaders = {}) {
                 }
             });
         })
-        .catch(err => {
-            return null;
-        });
+        .catch(err => null);
 }
 
 // TMDB Helper
@@ -188,10 +201,8 @@ function normalizeTitle(s) {
 
 function searchMovieBox(query) {
     const url = `${API_BASE}/wefeed-mobile-bff/subject-api/search/v2`;
-    // Strict formatting
     const body = `{"page": 1, "perPage": 10, "keyword": "${query}"}`;
-
-    return request('POST', url, body).then(res => {
+    return requestWithDoh('POST', url, body).then(res => {
         if (res && res.data && res.data.results) {
             let allSubjects = [];
             res.data.results.forEach(group => {
@@ -220,7 +231,6 @@ function findBestMatch(subjects, tmdbTitle, tmdbYear, mediaType) {
         const year = subject.year || (subject.releaseDate ? subject.releaseDate.substring(0, 4) : null);
 
         let score = 0;
-
         if (normTitle === normTmdbTitle) score += 50;
         else if (normTitle.includes(normTmdbTitle) || normTmdbTitle.includes(normTitle)) score += 15;
 
@@ -231,7 +241,6 @@ function findBestMatch(subjects, tmdbTitle, tmdbYear, mediaType) {
             bestMatch = subject;
         }
     }
-
     if (bestScore >= 40) return bestMatch;
     return null;
 }
@@ -263,8 +272,8 @@ function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = '', med
 
     function urlTypeRank(url) {
         const u = String(url || '').toLowerCase();
-        if (u.includes('.mpd')) return 3;   // DASH
-        if (u.includes('.m3u8')) return 2;  // HLS
+        if (u.includes('.mpd')) return 3;
+        if (u.includes('.m3u8')) return 2;
         if (u.includes('.mp4') || u.includes('.mkv')) return 1;
         return 0;
     }
@@ -276,7 +285,7 @@ function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = '', med
         return title || 'Stream';
     }
 
-    return request('GET', subjectUrl).then(subjectRes => {
+    return requestWithDoh('GET', subjectUrl).then(subjectRes => {
         if (!subjectRes || !subjectRes.data) return [];
 
         const subjectIds = [];
@@ -293,43 +302,51 @@ function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = '', med
             });
         }
 
-        // Add original first
         subjectIds.unshift({ id: subjectId, lang: originalLang });
 
-        // Fetch streams for all IDs
         const promises = subjectIds.map(item => {
             const playUrl = `${API_BASE}/wefeed-mobile-bff/subject-api/play-info?subjectId=${item.id}&se=${season}&ep=${episode}`;
-            return request('GET', playUrl).then(playRes => {
+            return requestWithDoh('GET', playUrl).then(playRes => {
                 const streams = [];
                 if (playRes && playRes.data && playRes.data.streams) {
                     playRes.data.streams.forEach(stream => {
                         if (stream.url) {
-                            // Determine quality (avoid emitting multiple qualities for the same URL).
                             const qualityField = stream.resolutions || stream.quality || 'Auto';
                             let candidates = [];
 
-                            if (Array.isArray(qualityField)) {
-                                candidates = qualityField;
-                            } else if (typeof qualityField === 'string' && qualityField.includes(',')) {
-                                candidates = qualityField.split(',').map(s => s.trim()).filter(Boolean);
-                            } else {
-                                candidates = [qualityField];
-                            }
+                            if (Array.isArray(qualityField)) candidates = qualityField;
+                            else if (typeof qualityField === 'string' && qualityField.includes(',')) candidates = qualityField.split(',').map(s => s.trim()).filter(Boolean);
+                            else candidates = [qualityField];
 
                             const maxQ = candidates.reduce((m, v) => Math.max(m, parseQualityNumber(v)), 0);
                             const quality = maxQ ? `${maxQ}p` : formatQualityLabel(candidates[0]);
                             const formatType = getFormatType(stream.url);
+
+                            // --- ANDROID TV FIX: ENHANCED HEADERS ---
+                            // We use a generic "AppleTV" or "ExoPlayer" user-agent style to ensure wide compatibility with TV OS media codecs.
+                            const tvHeaders = {
+                                "Referer": API_BASE,
+                                "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; Android TV Build/RP1A.200720.011)",
+                                "Connection": "keep-alive",
+                                "Accept-Encoding": "gzip, deflate, br",
+                                "X-Playback-Session-Id": Math.random().toString(36).substring(2, 15)
+                            };
+
+                            if (stream.signCookie) {
+                                tvHeaders["Cookie"] = stream.signCookie;
+                            }
 
                             streams.push({
                                 name: `MovieBox (${item.lang}) ${quality} [${formatType}]`,
                                 title: formatTitle(mediaTitle, season, episode, mediaType),
                                 url: stream.url,
                                 quality,
-                                headers: {
-                                    "Referer": API_BASE,
-                                    "User-Agent": HEADERS['User-Agent'],
-                                    ...(stream.signCookie ? { "Cookie": stream.signCookie } : {})
-                                },
+                                headers: tvHeaders,
+                                // Metadata for TV Players
+                                isLive: false,
+                                metadata: {
+                                    mediaType: formatType === 'HLS' ? 'application/x-mpegURL' : (formatType === 'DASH' ? 'application/dash+xml' : 'video/mp4')
+                                }
                             });
                         }
                     });
